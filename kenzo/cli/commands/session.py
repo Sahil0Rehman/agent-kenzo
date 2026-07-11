@@ -29,13 +29,19 @@ def start_interactive_session(
     workspace mode -- see `kenzo.core.workspace`."""
     banner()
 
-    workspace = None
-    if see or also_edit:
-        try:
-            workspace = build_workspace(repo_path, see=see, also_edit=also_edit)
-        except WorkspaceError as exc:
-            console.print(Panel(str(exc), title="Kenzo Error", border_style="red"))
-            return
+    # Phase 11: a Workspace is ALWAYS constructed (even with zero --see/
+    # --also-edit) so mid-session discovery (add_reference_repo) is always
+    # available -- you don't have to know up front that a request will
+    # mention another repo's path; Kenzo can register one the moment your
+    # own message names it. --see/--also-edit just pre-populate it for
+    # repos you already know you'll need (and are the ONLY way to grant
+    # write access -- add_reference_repo is always read-only).
+    try:
+        workspace = build_workspace(repo_path, see=see, also_edit=also_edit)
+    except WorkspaceError as exc:
+        console.print(Panel(str(exc), title="Kenzo Error", border_style="red"))
+        return
+    if workspace.has_any_other_repo():
         console.print(
             f"[dim]Workspace: {len(workspace.others)} other repo(s) -- "
             f"read-only: {[r.alias for r in workspace.others if not r.writable]}, "

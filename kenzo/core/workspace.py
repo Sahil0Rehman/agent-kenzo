@@ -76,6 +76,45 @@ class Workspace:
     def has_writable_other_repo(self) -> bool:
         return any(repo.writable for repo in self.others)
 
+    def add_reference(self, path: str, alias: Optional[str] = None) -> WorkspaceRepo:
+        """Register a new repo MID-SESSION, ALWAYS read-only -- backs the
+        `add_reference_repo` tool (see `kenzo.tools.cross_repo`), which lets
+        the model discover a repo a user's request mentions inline (e.g. "also
+        check C:\\CrossID-Support\\Sprint52\\CIDSaas") without it having been
+        named via --see/--also-edit up front. Deliberately has NO writable
+        counterpart -- write access is a human decision (--also-edit at
+        startup), never something the model grants itself by inferring intent
+        from prose; a task that genuinely needs to edit a repo discovered this
+        way must tell the user to re-run with --also-edit for it (see
+        write_other_repo_file/edit_other_repo_file's refusal message, which
+        says exactly this).
+
+        Raises `WorkspaceError` for a nonexistent path or one that resolves to
+        the primary repo. If `path` is already registered (by resolved path,
+        not alias), returns the EXISTING entry unchanged rather than adding a
+        duplicate -- idempotent, since the model may mention the same repo
+        again in a later turn.
+        """
+        resolved = Path(path).resolve()
+        if not resolved.is_dir():
+            raise WorkspaceError(f"'{path}' does not exist or is not a directory")
+        if str(resolved) == self.primary_path:
+            raise WorkspaceError(f"'{path}' is already the primary repo you're working in")
+
+        for existing in self.others:
+            if existing.path == str(resolved):
+                return existing
+
+        taken = {repo.alias for repo in self.others}
+        if alias and alias not in taken:
+            resolved_alias = alias
+        else:
+            resolved_alias = _default_alias(str(resolved), taken)
+
+        entry = WorkspaceRepo(alias=resolved_alias, path=str(resolved), writable=False)
+        self.others.append(entry)
+        return entry
+
 
 def _default_alias(path: str, taken: set[str]) -> str:
     """Auto-derive a short alias from a path's folder name, deduplicating

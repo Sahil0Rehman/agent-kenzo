@@ -31,7 +31,12 @@ from kenzo.tools import filesystem
 # tools are additionally gated per-call against the workspace's writable
 # set (see write_other_repo_file/edit_other_repo_file below), so listing
 # their names somewhere doesn't by itself grant write access to anything.
-READ_TOOL_NAMES = ["read_other_repo_file", "list_other_repo_directory", "search_other_repo_files"]
+READ_TOOL_NAMES = [
+    "add_reference_repo",
+    "read_other_repo_file",
+    "list_other_repo_directory",
+    "search_other_repo_files",
+]
 WRITE_TOOL_NAMES = ["write_other_repo_file", "edit_other_repo_file"]
 
 
@@ -54,6 +59,29 @@ def _not_writable_error(tool_name: str, repo: str, workspace: Workspace) -> Tool
             f"not --also-edit. Writable repos: {writable}. If you genuinely need to edit '{repo}', "
             "the user must re-run with --also-edit for it."
         ),
+    )
+
+
+def add_reference_repo(path: str, workspace: Workspace, alias: str | None = None) -> ToolResult:
+    """Register a new repo mid-session, ALWAYS read-only -- call this when
+    the user's OWN request mentions a repository path not already listed as
+    available (see the workspace context block) before trying to read
+    anything there. Never grants write access -- if the task turns out to
+    need to EDIT this repo too, say so in your final answer and tell the
+    user to re-run with --also-edit for it; do not assume permission from
+    wording like "backport" or "also fix" alone.
+    """
+    from kenzo.core.workspace import WorkspaceError
+
+    try:
+        entry = workspace.add_reference(path, alias=alias)
+    except WorkspaceError as exc:
+        return ToolResult(tool_name="add_reference_repo", success=False, error=str(exc))
+    return ToolResult(
+        tool_name="add_reference_repo",
+        success=True,
+        output=f"'{entry.alias}' -> {entry.path} is now available read-only as '{entry.alias}'.",
+        data={"alias": entry.alias, "path": entry.path, "writable": entry.writable},
     )
 
 
@@ -110,24 +138,50 @@ def edit_other_repo_file(
 def get_tool_specs(
     workspace: Workspace, permissions: PermissionsConfig, indexing: IndexingConfig | None = None
 ) -> list[ToolSpec]:
-    """Cross-repo ToolSpecs for `workspace`. Returns an empty list if the
-    workspace has no other repos at all -- callers can unconditionally call
-    this and register the (possibly empty) result, matching how MCP tools
-    are registered unconditionally and simply contribute nothing when no
-    server is configured.
+    """Cross-repo ToolSpecs for `workspace`. `add_reference_repo` plus the
+    three read tools are registered whenever a `Workspace` exists AT ALL
+    (even with zero `others` yet) -- this is what makes mid-session
+    discovery possible: a bare `kenzo` session with no --see/--also-edit
+    given still gets a Workspace(primary_path=..., others=[]) (see
+    kenzo.core.runtime.AgentRuntime), so the model can call
+    add_reference_repo the FIRST time a request mentions another repo,
+    rather than that capability only existing if the user happened to name
+    a repo via a CLI flag before the session even started. Write tools
+    remain gated on `has_writable_other_repo()` -- add_reference_repo can
+    never make one writable, so this can only become true via --also-edit.
     """
-    if not workspace.has_any_other_repo():
-        return []
-
     ignored_dirs = (indexing or IndexingConfig()).ignored_dirs
-    known_repos_desc = ", ".join(f"'{r.alias}'" + (" (writable)" if r.writable else " (read-only)") for r in workspace.others)
 
-    repo_param = {
-        "type": "string",
-        "description": f"Which workspace repo to use. Known: {known_repos_desc}.",
-    }
+    def _repo_param() -> dict:
+        known_repos_desc = ", ".join(
+            f"'{r.alias}'" + (" (writable)" if r.writable else " (read-only)") for r in workspace.others
+        ) or "(none yet -- call add_reference_repo first)"
+        return {"type": "string", "description": f"Which workspace repo to use. Known: {known_repos_desc}."}
+
+    repo_param = _repo_param()
 
     specs = [
+        ToolSpec(
+            name="add_reference_repo",
+            description=(
+                "Register another repository as a READ-ONLY reference for the rest of this "
+                "task, when the user's OWN request mentions a repo path that isn't already "
+                "listed as available (see the workspace context). Call this BEFORE trying to "
+                "read anything there. Never grants write access."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the repository the user mentioned."},
+                    "alias": {
+                        "type": "string",
+                        "description": "Optional short label to refer to it by afterward; auto-derived from the folder name if omitted.",
+                    },
+                },
+                "required": ["path"],
+            },
+            func=lambda path, alias=None: add_reference_repo(path, workspace, alias=alias),
+        ),
         ToolSpec(
             name="read_other_repo_file",
             description=(

@@ -279,14 +279,28 @@ def _render_vision_context(context: Optional[dict[str, Any]]) -> str:
 def _render_workspace_context(workspace: Optional[Workspace]) -> str:
     """Render the Phase 11 multi-repo workspace (see `kenzo.core.workspace
     .Workspace`) into a short block telling the model what other repos it
-    can reach and how. Returns "" if no workspace is active (the default --
-    single-repo callers are completely unaffected) or the workspace has no
-    other repos configured. Unlike ide_context/vision_context, this is
-    STATIC for the whole run (decided once via CLI flags, not settable
-    mid-task), so it's rendered every decision, not cleared/replaced.
+    can reach and how -- INCLUDING when there are none registered yet, so
+    the model always knows it CAN discover one via `add_reference_repo`
+    (e.g. the user's own request just mentions a path like "also check
+    C:\\CrossID-Support\\Sprint52\\CIDSaas") without that repo having been
+    named via --see/--also-edit up front. Returns "" only when `workspace`
+    itself is None (single-repo callers that never opted into workspace
+    mode at all -- the pre-Phase-11 default, completely unaffected). Unlike
+    ide_context/vision_context, `workspace` itself is fixed for the run, but
+    its CONTENTS (`.others`) can grow mid-session via `add_reference_repo`,
+    so this is rendered fresh every decision, not cached.
     """
-    if workspace is None or not workspace.has_any_other_repo():
+    if workspace is None:
         return ""
+
+    if not workspace.has_any_other_repo():
+        return (
+            "Workspace: no other repos registered yet. If the user's OWN request mentions a "
+            "file path belonging to a DIFFERENT repository (e.g. another branch/sprint checkout, "
+            "or a service this one depends on), call add_reference_repo(path) FIRST to register it "
+            "as a read-only reference, then use read_other_repo_file/search_other_repo_files/"
+            "list_other_repo_directory against it. Never invent a path the user didn't mention."
+        )
 
     lines: list[str] = []
     for repo in workspace.others:
@@ -296,16 +310,25 @@ def _render_workspace_context(workspace: Optional[Workspace]) -> str:
     guidance = (
         "Use read_other_repo_file/list_other_repo_directory/search_other_repo_files to "
         "reference these (e.g. checking how a legacy/other branch implemented something "
-        "before changing the current one)."
+        "before changing the current one). If the user's request ALSO mentions a repo not "
+        "listed above, call add_reference_repo(path) to add it as another read-only reference."
     )
     if workspace.has_writable_other_repo():
         guidance += (
             " write_other_repo_file/edit_other_repo_file work ONLY against the repo(s) marked "
             "read+write above -- e.g. porting the same fix into another branch. Every other repo "
-            "is refused at the tool level even if you try."
+            "is refused at the tool level even if you try. add_reference_repo NEVER makes a repo "
+            "writable -- if the user's request implies a repo you only just discovered also needs "
+            "editing (e.g. \"backport this\"), say so plainly in your final answer and tell them to "
+            "re-run with --also-edit for it; do not assume permission from wording alone."
         )
     else:
-        guidance += " None of them are editable this run -- writes there will be refused."
+        guidance += (
+            " None of them are editable this run -- writes there will be refused. If the task "
+            "genuinely needs to edit one of them (e.g. the user says \"backport\"/\"port this fix "
+            "too\"), say so plainly in your final answer and tell the user to re-run with "
+            "--also-edit for that repo; do not assume permission from wording alone."
+        )
 
     return (
         "Other repos available in this workspace (in addition to the primary repo you're "

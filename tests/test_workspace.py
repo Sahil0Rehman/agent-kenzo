@@ -305,6 +305,104 @@ def test_workspace_find_returns_none_for_unknown_and_correct_repo_for_known(tmp_
 
 
 # ===========================================================================
+# 1b. Workspace.add_reference -- mid-session dynamic discovery
+# ===========================================================================
+
+
+def test_add_reference_registers_a_new_read_only_repo(tmp_path):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    discovered = tmp_path / "sprint52_cidsaas"
+    discovered.mkdir()
+
+    ws = Workspace(primary_path=str(primary.resolve()))
+    assert ws.has_any_other_repo() is False
+
+    entry = ws.add_reference(str(discovered))
+
+    assert entry.writable is False
+    assert entry.path == str(discovered.resolve())
+    assert ws.has_any_other_repo() is True
+    assert ws.find(entry.alias) is entry
+
+
+def test_add_reference_is_idempotent_for_the_same_path(tmp_path):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    discovered = tmp_path / "sprint52_cidsaas"
+    discovered.mkdir()
+
+    ws = Workspace(primary_path=str(primary.resolve()))
+    first = ws.add_reference(str(discovered))
+    second = ws.add_reference(str(discovered))
+
+    assert first is second
+    assert len(ws.others) == 1
+
+
+def test_add_reference_with_explicit_alias_uses_it(tmp_path):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    discovered = tmp_path / "some_folder"
+    discovered.mkdir()
+
+    ws = Workspace(primary_path=str(primary.resolve()))
+    entry = ws.add_reference(str(discovered), alias="entities")
+
+    assert entry.alias == "entities"
+
+
+def test_add_reference_nonexistent_path_raises(tmp_path):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    ws = Workspace(primary_path=str(primary.resolve()))
+
+    with pytest.raises(WorkspaceError):
+        ws.add_reference(str(tmp_path / "does-not-exist"))
+
+
+def test_add_reference_primary_path_raises(tmp_path):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    ws = Workspace(primary_path=str(primary.resolve()))
+
+    with pytest.raises(WorkspaceError):
+        ws.add_reference(str(primary))
+
+
+def test_add_reference_never_produces_a_writable_entry_even_with_an_alias_matching_an_also_edit_repo(tmp_path):
+    """add_reference is the ONLY path a model can reach on its own (no user
+    consent needed); it must never be able to grant write access, no matter
+    what alias is requested."""
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    discovered = tmp_path / "other"
+    discovered.mkdir()
+
+    ws = Workspace(primary_path=str(primary.resolve()))
+    entry = ws.add_reference(str(discovered), alias="sibling")
+
+    assert entry.writable is False
+
+
+def test_add_reference_repo_tool_success_and_error(tmp_path):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    discovered = tmp_path / "discovered_repo"
+    discovered.mkdir()
+
+    ws = Workspace(primary_path=str(primary.resolve()))
+    result = cross_repo.add_reference_repo(str(discovered), ws)
+
+    assert result.success is True
+    assert result.data["writable"] is False
+    assert ws.find(result.data["alias"]) is not None
+
+    bad_result = cross_repo.add_reference_repo(str(tmp_path / "nope"), ws)
+    assert bad_result.success is False
+
+
+# ===========================================================================
 # 2. kenzo.tools.cross_repo: real tmp repos, real files, no mocking
 # ===========================================================================
 
@@ -407,14 +505,25 @@ def test_write_and_edit_against_also_edit_repo_succeed_and_disk_changes(cross_re
     assert "sibling placeholder" not in new_content
 
 
-def test_get_tool_specs_empty_workspace_returns_empty_list(tmp_path):
+def test_get_tool_specs_empty_workspace_has_discovery_and_read_tools_but_no_write_tools(tmp_path):
+    """An empty Workspace (zero --see/--also-edit given) still gets
+    add_reference_repo + the 3 read tools registered -- this is what makes
+    MID-SESSION discovery possible (the model can call add_reference_repo
+    the first time a request mentions another repo's path, rather than that
+    capability only existing if a repo happened to be named via a CLI flag
+    before the session even started). Write tools stay absent: add_reference
+    _repo can only ever add READ-ONLY entries, so an empty workspace can
+    never need write_other_repo_file/edit_other_repo_file."""
     primary = tmp_path / "primary"
     primary.mkdir()
     ws = Workspace(primary_path=str(primary.resolve()))
 
     specs = get_tool_specs(ws, PermissionsConfig(allow_write=True))
+    names = {spec.name for spec in specs}
 
-    assert specs == []
+    assert names == {"add_reference_repo", "read_other_repo_file", "list_other_repo_directory", "search_other_repo_files"}
+    assert "write_other_repo_file" not in names
+    assert "edit_other_repo_file" not in names
 
 
 def test_get_tool_specs_see_only_workspace_has_read_tools_but_not_write_tool_names(cross_repo_workspace, tmp_path):
@@ -783,3 +892,105 @@ def test_worker_gets_read_only_cross_repo_tools_never_write_tools(tmp_path):
     assert result.success is True
     assert result.tool_calls_made == 2
     assert "Foo.java" in result.files
+
+
+# ===========================================================================
+# 6. Mid-session dynamic discovery end to end (a repo NEVER named via
+#    --see/--also-edit, discovered purely because the user's own prompt
+#    mentioned its path)
+# ===========================================================================
+
+
+def test_add_reference_repo_discovered_mid_task_via_real_controller(tmp_path):
+    """The bare `kenzo` command (zero --see/--also-edit) still lets the
+    model discover and read a repo the user's OWN request mentions inline --
+    this is what makes free-form prompts like "...also check C:\\...\\Sprint52"
+    work without pre-declaring anything on the command line."""
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _write(primary / "AuthController.java", "public class AuthController {\n    // TODO\n}\n")
+
+    discovered = tmp_path / "sprint52_cidsaas"
+    discovered.mkdir()
+    _write(discovered / "AuthEntity.java", "public class AuthEntity {\n    // entity fields live here\n}\n")
+
+    # Exactly what session.py now does unconditionally, even with zero flags.
+    ws = build_workspace(str(primary), see=[], also_edit=[])
+    assert ws.has_any_other_repo() is False
+
+    tools = build_default_registry(str(primary), PermissionsConfig(allow_write=True), workspace=ws)
+    assert "add_reference_repo" in tools.names()
+
+    memory = RepositoryMemory(str(primary))
+    config = KenzoConfig()
+
+    decisions = [
+        _decision(ControllerAction.SEARCH, "The user mentioned a repo I don't have yet -- discover and check it.", str(discovered)),
+        _decision(ControllerAction.FINISH, "Checked the entity repo as asked."),
+    ]
+    actions = [
+        _tool_call_response("call-discover", "add_reference_repo", {"path": str(discovered)}),
+        _tool_call_response("call-read", "read_other_repo_file", {"repo": discovered.name, "path": "AuthEntity.java"}),
+        _final_text("Found AuthEntity.java -- entity fields live there as expected."),
+    ]
+    router = _ControllerScriptedRouter(decisions, actions)
+    controller = AgentController(router, tools, memory, config, workspace=ws)
+
+    result = controller.run(f"Fix the AuthController TODO -- also check {discovered} to see how the entity is defined, no need to edit it")
+
+    assert result["finished"] is True
+    # The live Workspace object was genuinely mutated mid-task.
+    assert ws.has_any_other_repo() is True
+    entry = ws.others[0]
+    assert entry.path == str(discovered.resolve())
+    assert entry.writable is False
+
+
+def test_write_to_newly_discovered_repo_fails_closed_when_no_also_edit_was_ever_given(tmp_path):
+    """A session started with ZERO --also-edit repos never has write_other
+    _repo_file/edit_other_repo_file registered AT ALL (has_writable_other_repo()
+    is False at registration and add_reference_repo can never change that) --
+    an even stronger fail-closed outcome than a per-call refusal."""
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    discovered = tmp_path / "discovered"
+    discovered.mkdir()
+    _write(discovered / "f.txt", "original\n")
+
+    ws = build_workspace(str(primary), see=[], also_edit=[])
+    tools = build_default_registry(str(primary), PermissionsConfig(allow_write=True), workspace=ws)
+    assert "edit_other_repo_file" not in tools.names()
+
+    entry = ws.add_reference(str(discovered))
+    result = tools.execute("edit_other_repo_file", {"repo": entry.alias, "path": "f.txt", "old_text": "original", "new_text": "hacked"})
+
+    assert result.success is False
+    assert "No tool named" in result.error
+    assert (discovered / "f.txt").read_text(encoding="utf-8") == "original\n"
+
+
+def test_write_to_newly_discovered_repo_refused_per_call_when_another_also_edit_repo_exists(tmp_path):
+    """If the session DOES have write tools registered (because of a
+    DIFFERENT --also-edit repo), a newly-discovered repo still can't be
+    written to -- refused per-call this time, since the tool exists but the
+    specific repo alias isn't in the writable set."""
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    other_writable = tmp_path / "other_writable"
+    other_writable.mkdir()
+    _write(other_writable / "x.txt", "x\n")
+    discovered = tmp_path / "discovered"
+    discovered.mkdir()
+    _write(discovered / "f.txt", "original\n")
+
+    ws = build_workspace(str(primary), see=[], also_edit=[f"other={other_writable}"])
+    tools = build_default_registry(str(primary), PermissionsConfig(allow_write=True), workspace=ws)
+    assert "edit_other_repo_file" in tools.names()
+
+    entry = ws.add_reference(str(discovered))
+    result = tools.execute("edit_other_repo_file", {"repo": entry.alias, "path": "f.txt", "old_text": "original", "new_text": "hacked"})
+
+    assert result.success is False
+    assert "not writable" in result.error
+    assert "also-edit" in result.error
+    assert (discovered / "f.txt").read_text(encoding="utf-8") == "original\n"
