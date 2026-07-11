@@ -19,14 +19,37 @@ from kenzo.core.runtime import AgentRuntime
 from kenzo.core.workspace import WorkspaceError, build_workspace
 
 
+def _render_plan_for_approval(task_state, rationale: str) -> bool:
+    """Phase 12's CLI plan-approval renderer: print the plan Rich-formatted
+    and block on `console.input()` for a yes/no -- a plain synchronous call
+    is enough here (unlike VS Code's edit-approval, which needs a
+    thread+queue bridge because it's driven from an async WebSocket handler)
+    since the bare `kenzo` session is already single-threaded and blocking
+    end to end."""
+    steps = task_state.remaining_work or ["(no explicit steps -- see rationale)"]
+    steps_text = "\n".join(f"  {i}. {step}" for i, step in enumerate(steps, start=1))
+    console.print(
+        Panel(
+            f"Goal: {task_state.goal}\n\nRationale: {rationale}\n\nSteps:\n{steps_text}",
+            title="Proposed Plan -- Approve?",
+            border_style="cyan",
+        )
+    )
+    answer = console.input("[bold cyan]Proceed with this plan? [Y/n]:[/bold cyan] ")
+    return answer.strip().lower() not in ("n", "no")
+
+
 def start_interactive_session(
     repo_path: str = ".",
     see: Optional[list[str]] = None,
     also_edit: Optional[list[str]] = None,
+    plan_first: bool = False,
 ) -> None:
     """Run the interactive Kenzo session against `repo_path` until the user
     exits. `see`/`also_edit` (Phase 11), if given, put Kenzo in multi-repo
-    workspace mode -- see `kenzo.core.workspace`."""
+    workspace mode -- see `kenzo.core.workspace`. `plan_first` (Phase 12),
+    if set, pauses for your approval after every PLAN step before Kenzo
+    acts on it -- see `AgentController.set_plan_approval_handler`."""
     banner()
 
     # Phase 11: a Workspace is ALWAYS constructed (even with zero --see/
@@ -49,6 +72,9 @@ def start_interactive_session(
         )
 
     runtime = AgentRuntime(repo_path, on_event=render_event, workspace=workspace)
+    if plan_first:
+        runtime.controller.set_plan_approval_handler(_render_plan_for_approval)
+        console.print("[dim]--plan-first: Kenzo will pause for your approval after every plan.[/dim]")
 
     try:
         while True:

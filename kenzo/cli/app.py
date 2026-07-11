@@ -49,10 +49,15 @@ def main_callback(
         "--also-edit",
         help="Another repo Kenzo may also EDIT this run (e.g. porting a fix into a second branch). Repeatable.",
     ),
+    plan_first: bool = typer.Option(
+        False,
+        "--plan-first",
+        help="Pause and show the plan for your approval before Kenzo acts on it, every time it plans.",
+    ),
 ) -> None:
     """Launch the interactive Kenzo session when no subcommand is given."""
     if ctx.invoked_subcommand is None:
-        session.start_interactive_session(repo_path=repo, see=see, also_edit=also_edit)
+        session.start_interactive_session(repo_path=repo, see=see, also_edit=also_edit, plan_first=plan_first)
 
 
 def main() -> None:

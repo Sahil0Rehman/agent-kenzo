@@ -599,6 +599,14 @@ class AgentController:
         # set_vision_context. None until `kenzo image`/kenzo.server's
         # attach_image handling sets one.
         self.vision_context: Optional[dict[str, Any]] = None
+        # Phase 12: optional "pause after every PLAN action for approval"
+        # hook -- see set_plan_approval_handler. None (the default, and
+        # every pre-Phase-12 caller) means "never pause," preserving exact
+        # prior behavior. Mirrors set_edit_proposal_handler's "plain,
+        # swappable callback attribute" pattern (Phase 7) rather than a
+        # constructor-only option, so a CLI session can toggle it per
+        # invocation without AgentRuntime needing to know it exists.
+        self.plan_approval_handler: Optional[Any] = None
 
         # Phase 9: parallel worker system, backing the DELEGATE action (see
         # _execute_delegate). Built on `self.tools` (the FULLY wrapped chain
@@ -634,6 +642,21 @@ class AgentController:
         as PRIORITY context, ahead of everything except IDE context, in
         `_decide_next_action`. See `_render_vision_context`."""
         self.vision_context = context
+
+    def set_plan_approval_handler(self, handler: Optional[Any]) -> None:
+        """Set (or clear, with `None`) a callback invoked once every time a
+        `PLAN` action completes, BEFORE the loop continues to whatever the
+        model decides next: `handler(task_state: TaskState, rationale: str)
+        -> bool`. Returning `False` stops the task cleanly (matching how
+        `ASK_USER` already stops a task, but without needing further model
+        input to explain why) instead of letting it proceed to EDIT/etc.
+        `task_state.remaining_work` is the parsed plan's step descriptions
+        and `task_state.goal` the (possibly PLAN-restated) goal -- everything
+        a renderer needs, already the exact shape `_render_task_state` itself
+        reads. `None` (the default) means "never pause," identical to every
+        pre-Phase-12 caller's behavior -- see `kenzo.cli.commands.session`
+        for the CLI's `--plan-first` renderer."""
+        self.plan_approval_handler = handler
 
     def set_edit_proposal_handler(self, on_proposal: Optional[Any]) -> None:
         """IDE mode only: set (or clear, with `None`) the callback invoked
@@ -737,6 +760,24 @@ class AgentController:
                 step_count = len(task_state.remaining_work)
                 if step_count and step_count <= 2:
                     iteration_ceiling = min(iteration_ceiling, budget.small_task_iterations)
+
+                # Phase 12: pause for human approval right after a PLAN
+                # completes, BEFORE the loop is allowed to act on it -- the
+                # exact "agreement before code" checkpoint plan_approval
+                # _handler exists for. A PLAN revisited later in the SAME
+                # task (the controller can return to PLAN more than once)
+                # pauses again each time, since each revision is a new
+                # decision worth the same checkpoint.
+                if self.plan_approval_handler is not None:
+                    approved = self.plan_approval_handler(task_state, decision.rationale)
+                    if not approved:
+                        task_state.finished = True
+                        task_state.final_response = (
+                            "Plan was not approved -- stopping without making any changes. "
+                            "Re-run with a refined request to try again."
+                        )
+                        self._save(task_state)
+                        break
 
             task_state.iteration += 1
             self._save(task_state)
