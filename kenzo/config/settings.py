@@ -98,10 +98,19 @@ DEFAULT_IGNORED_DIRS: list[str] = [
 
 
 class IndexingConfig(BaseModel):
-    """Configuration for repository scanning (indexing, search, tree, symbols)."""
+    """Configuration for repository scanning (indexing, search, tree, symbols).
+
+    `max_indexed_files` was raised from 2000 to 8000 after a real enterprise
+    Java/Spring repo (8037 candidate files) showed the old default was too
+    low to reasonably cover a large monorepo-style service -- combined with
+    `SymbolIndex.build`'s round-robin-by-language selection (see its
+    docstring), a still-truncated repo now at least gets a proportional
+    slice of every language instead of one language potentially getting
+    zero representation.
+    """
 
     ignored_dirs: list[str] = Field(default_factory=lambda: list(DEFAULT_IGNORED_DIRS))
-    max_indexed_files: int = 2000
+    max_indexed_files: int = 8000
 
 
 class EmbeddingConfig(BaseModel):

@@ -15,6 +15,7 @@ from kenzo.core.graph import build_graph
 from kenzo.core.indexing_service import IndexingService
 from kenzo.core.project import ProjectAnalyzer
 from kenzo.core.schemas import new_state
+from kenzo.core.workspace import Workspace
 from kenzo.mcp.client import MCPClient
 from kenzo.memory.architecture_memory import ArchitectureMemory, MemoryEntry
 from kenzo.memory.importance import is_worth_remembering
@@ -35,6 +36,7 @@ class AgentRuntime:
         config: Optional[KenzoConfig] = None,
         on_event: Optional[EventSink] = None,
         ide_mode: bool = False,
+        workspace: Optional[Workspace] = None,
     ) -> None:
         self.config = config or load_config()
         self.repo_path = str(Path(repo_path).resolve())
@@ -42,6 +44,10 @@ class AgentRuntime:
         self.memory.ensure_kenzo_dir()
         self.router = ModelRouter(self.config)
         self.on_event = on_event
+        # Phase 11: other repos this run can see/edit -- see
+        # kenzo.core.workspace. None (the default) means single-repo,
+        # preserving exact prior behavior for every pre-Phase-11 caller.
+        self.workspace = workspace
 
         # Repository intelligence: detect what kind of project this is (so
         # Tester stops assuming Python) and, for Java, extract a lightweight
@@ -77,7 +83,12 @@ class AgentRuntime:
         self.mcp_client.connect_all()
 
         self.tools = build_default_registry(
-            self.repo_path, self.config.permissions, self.config.indexing, self.indexing_service, self.mcp_client
+            self.repo_path,
+            self.config.permissions,
+            self.config.indexing,
+            self.indexing_service,
+            self.mcp_client,
+            workspace=self.workspace,
         )
 
         # Phase 5: cross-session (this process's lifetime) and long-term
@@ -106,6 +117,7 @@ class AgentRuntime:
             architecture_memory=self.architecture_memory,
             mcp_client=self.mcp_client,
             ide_mode=ide_mode,
+            workspace=self.workspace,
         )
 
     def close(self) -> None:

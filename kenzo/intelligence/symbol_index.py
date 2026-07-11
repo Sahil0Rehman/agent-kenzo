@@ -32,6 +32,34 @@ from kenzo.intelligence.models import ClassSymbol, FileNode, FunctionSymbol
 from kenzo.intelligence.parser import language_for_extension, parse_file
 
 
+def _round_robin_by_language(paths_by_language: dict[str, list[str]], max_files: int) -> list[str]:
+    """Interleave each language's (already alphabetically-sorted) path list
+    one file at a time, in a stable language order (sorted by name), until
+    `max_files` total is reached or every list is exhausted. See
+    `SymbolIndex.build`'s docstring for why this replaces a single
+    alphabetical sort over every path combined.
+    """
+    if max_files <= 0:
+        return []
+    ordered_languages = sorted(paths_by_language.keys())
+    cursors = {language: 0 for language in ordered_languages}
+    result: list[str] = []
+    while len(result) < max_files:
+        made_progress = False
+        for language in ordered_languages:
+            if len(result) >= max_files:
+                break
+            paths = paths_by_language[language]
+            cursor = cursors[language]
+            if cursor < len(paths):
+                result.append(paths[cursor])
+                cursors[language] = cursor + 1
+                made_progress = True
+        if not made_progress:
+            break
+    return result
+
+
 class SymbolIndex:
     """A queryable, persistable index of every parsed source file in a repo."""
 
@@ -61,13 +89,25 @@ class SymbolIndex:
 
         Mirrors `kenzo.memory.indexer.index_repository`'s walk discipline:
         `ignored_dirs` are pruned from `os.walk`'s `dirnames` in place (so we
-        never even descend into them), the resulting file list is sorted for
-        deterministic output, and `max_files` caps how many are actually
-        parsed while still reporting the true total found.
+        never even descend into them), and `max_files` caps how many are
+        actually parsed while still reporting the true total found.
+
+        Selection when truncated is ROUND-ROBIN ACROSS LANGUAGES (grouped by
+        `language_for_extension`, each group sorted alphabetically for
+        determinism), not a single alphabetical sort of every path -- a pure
+        alphabetical sort was found to starve whole languages out of the
+        index on real repos: a large `WebContent/` (JS/TS-heavy, common in
+        JSP-based Java web apps) sorts before `src/` (where the Java actually
+        lives), so with a low-enough cap the JS/TS files alone could consume
+        the entire budget before the walk ever reached the Java source the
+        cap was meant to leave room for. Round-robin guarantees every
+        language present gets a proportional share of `max_files` regardless
+        of which directory happens to sort first.
         """
         skip_dirs = set(ignored_dirs) if ignored_dirs is not None else set(DEFAULT_IGNORED_DIRS)
 
-        collected_paths: list[str] = []
+        paths_by_language: dict[str, list[str]] = {}
+        total_found = 0
         try:
             for dirpath, dirnames, filenames in os.walk(self.repo_root):
                 dirnames[:] = [d for d in dirnames if d not in skip_dirs]
@@ -75,23 +115,27 @@ class SymbolIndex:
                 current = Path(dirpath)
                 for filename in filenames:
                     file_path = current / filename
-                    if language_for_extension(file_path.suffix) is None:
+                    language = language_for_extension(file_path.suffix)
+                    if language is None:
                         continue
                     try:
                         rel_posix = file_path.relative_to(self.repo_root).as_posix()
                     except ValueError:
                         continue
-                    collected_paths.append(rel_posix)
+                    paths_by_language.setdefault(language, []).append(rel_posix)
+                    total_found += 1
         except OSError:
             # A directory disappearing/permission error mid-walk should not
             # sink the whole index build -- fall back to whatever we already
             # collected before the failure.
             pass
 
-        collected_paths.sort()
-        self.total_files_found = len(collected_paths)
-        self.truncated = self.total_files_found > max_files
-        included_paths = collected_paths[:max_files]
+        for language_paths in paths_by_language.values():
+            language_paths.sort()
+
+        self.total_files_found = total_found
+        self.truncated = total_found > max_files
+        included_paths = _round_robin_by_language(paths_by_language, max_files)
 
         new_files: dict[str, FileNode] = {}
         for rel_posix in included_paths:

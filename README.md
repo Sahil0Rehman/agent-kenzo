@@ -79,6 +79,7 @@ password reset`, and Kenzo will investigate, edit files, and run your tests
 | Lightweight Q&A | `kenzo chat` | Repo-aware conversation that never edits files. |
 | Screenshot debugging | `kenzo image screenshot.png` | Reads an error screen, broken UI, or log output from an image and drives a real fix from it. |
 | Parallel investigation | *(automatic)* | For big/unfamiliar/multi-cause problems, Kenzo can delegate to several read-only sub-agents (code research, bug analysis, tests, docs, git history) running **concurrently**, then merges their findings. |
+| Multi-repo workspace | `--see` / `--also-edit` | Work in one repo while reading (or, if you say so, also editing) others at once — e.g. checking how an old branch implemented something before fixing the new one, or porting the same fix into a second checkout. |
 | Self-improvement | `kenzo improve` | Analyzes a codebase (including Kenzo's own) for duplicate logic, dependency cycles, oversized files, and test gaps, then safely proposes and applies one fix — protected by an automatic test-regression guard that rolls back any change that breaks anything. |
 | Performance tracking | `kenzo benchmark` | Measures indexing speed and search quality, tracked over time. |
 | VS Code integration | see below | Chat, live diffs, screenshot attach, and a changes/memory panel inside the editor. |
@@ -115,6 +116,43 @@ Which provider handles which kind of work, tool permissions (shell
 execution, file writes, git writes), and every other setting are all
 editable in that same YAML file — see `kenzo/config/defaults.py` for the
 full template with comments.
+
+## Multi-Repo Workspace
+
+If your work is spread across more than one checkout — a rewrite of a legacy
+branch, a service that depends on entity classes defined in a different
+repo, the same service checked out per release branch — point Kenzo at all
+of them at once instead of one at a time:
+
+```bash
+kenzo --repo path/to/new-branch/MyService \
+      --see path/to/legacy-branch/MyService \
+      "check how the legacy branch handled the security-question dropdown, then fix the same bug here"
+```
+
+- `--repo` *(default `.`)* — the one repo Kenzo edits by default.
+- `--see PATH` *(repeatable)* — another repo Kenzo can **read and search**
+  for context, but can never write to. Give it an explicit label with
+  `--see label=path` (recommended when two repos share the same folder
+  name, e.g. several branches all containing a folder called `CIDSaas`) —
+  otherwise one is derived from the folder name automatically.
+- `--also-edit PATH` *(repeatable)* — another repo Kenzo may **also edit**
+  for this run, e.g. to port the same fix into a second branch. Use
+  `label=path` here too if you want a specific name.
+
+```bash
+# Port a fix into a second branch in the same run:
+kenzo --repo path/to/june-release/CIDSaas \
+      --see legacy=path/to/sprint53/CIDSaas \
+      --also-edit sprint53=path/to/sprint53/CIDSaas \
+      "fix the MFA registration deadlock, matching how legacy did it, and port the fix into sprint53 too"
+```
+
+Every repo you `--also-edit` gets its **own** independent checkpoint, so
+`kenzo rollback path/to/that/repo` undoes a bad edit there exactly like it
+does for the primary repo — nothing is shared between them. Any repo not
+listed in `--also-edit` is refused at the tool level if Kenzo ever tries to
+write to it, not just discouraged.
 
 ## VS Code Extension
 
@@ -154,6 +192,10 @@ kenzo server
   editing, testing, reviewing) only has access to the tools that step
   actually needs; a search step can never write a file, for example, even
   if a model hallucinated the attempt.
+- **Multi-repo workspaces default to read-only** — a `--see` repo can never
+  be written to, checked at the tool level (not just left unoffered); only
+  a repo explicitly named in `--also-edit` is writable, and gets its own
+  independent checkpoint so it's separately rollback-able.
 - **Self-improvement is extra-guarded** — when `kenzo improve` targets
   Kenzo's own source, it additionally refuses to ever touch its own
   `.kenzo/` operational data or anything secret/credential-looking, and
@@ -167,6 +209,7 @@ kenzo server
 kenzo init                 # one-time setup for a project
 kenzo index                # build/refresh the code-intelligence index
 kenzo                      # interactive autonomous agent session
+kenzo --repo P --see P2 --also-edit P3   # multi-repo workspace (see above)
 kenzo chat                 # repo-aware Q&A, never edits files
 kenzo image <path> [note]  # debug from a screenshot
 kenzo rollback             # undo the last checkpointed set of edits

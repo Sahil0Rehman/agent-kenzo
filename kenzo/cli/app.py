@@ -6,6 +6,8 @@ Entry point referenced by `pyproject.toml`'s `[project.scripts]`:
 
 from __future__ import annotations
 
+from typing import List, Optional
+
 import typer
 
 from kenzo.cli.commands import benchmark, chat, config_cmd, image, improve, init, rollback, server
@@ -30,10 +32,27 @@ app.add_typer(benchmark.app, name="benchmark")
 
 
 @app.callback(invoke_without_command=True)
-def main_callback(ctx: typer.Context) -> None:
+def main_callback(
+    ctx: typer.Context,
+    repo: str = typer.Option(".", "--repo", "-r", help="Repository to work on (writable)."),
+    see: Optional[List[str]] = typer.Option(
+        None,
+        "--see",
+        help=(
+            "Another repo Kenzo can READ/search for context but never edit, e.g. "
+            "--see ../legacy-branch/MyService or --see myalias=../legacy-branch/MyService. "
+            "Repeatable."
+        ),
+    ),
+    also_edit: Optional[List[str]] = typer.Option(
+        None,
+        "--also-edit",
+        help="Another repo Kenzo may also EDIT this run (e.g. porting a fix into a second branch). Repeatable.",
+    ),
+) -> None:
     """Launch the interactive Kenzo session when no subcommand is given."""
     if ctx.invoked_subcommand is None:
-        session.start_interactive_session()
+        session.start_interactive_session(repo_path=repo, see=see, also_edit=also_edit)
 
 
 def main() -> None:

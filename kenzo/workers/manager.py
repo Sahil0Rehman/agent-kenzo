@@ -64,12 +64,14 @@ class WorkerManager:
         workers_config: Any,
         mcp_client: Optional[Any] = None,
         emit: Optional[EmitFn] = None,
+        workspace: Optional[Any] = None,
     ) -> None:
         self.router = router
         self.tools = tools
         self.config = workers_config
         self.mcp_client = mcp_client
         self.emit = emit
+        self.workspace = workspace
         self._counter = 0
 
     def _next_worker_id(self) -> str:
@@ -137,7 +139,10 @@ class WorkerManager:
         # are read-only, just a wasted API call, and the thread exits
         # naturally once its own call returns.
         pool = ThreadPoolExecutor(max_workers=min(len(accepted), max_parallel))
-        futures = [(task, pool.submit(WorkerAgent(self.router, self.tools, self.mcp_client).run, task)) for task in accepted]
+        futures = [
+            (task, pool.submit(WorkerAgent(self.router, self.tools, self.mcp_client, workspace=self.workspace).run, task))
+            for task in accepted
+        ]
 
         results: list[WorkerResult] = []
         for task, future in futures:

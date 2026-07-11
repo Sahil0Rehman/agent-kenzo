@@ -22,6 +22,7 @@ from typing import Any, Optional
 from kenzo.core.schemas import TaskType
 from kenzo.core.tool_loop import extract_json, run_tool_loop
 from kenzo.mcp.permissions import ToolPermission
+from kenzo.tools.cross_repo import READ_TOOL_NAMES as _CROSS_REPO_READ_TOOLS
 from kenzo.workers.models import WorkerResult, WorkerTask, WorkerType
 
 # Per-worker-type read-only native tool names. Deliberately never includes
@@ -203,15 +204,20 @@ _VALID_SEVERITIES = frozenset({"low", "medium", "high", "critical"})
 _WORKER_MAX_ITERATIONS = 6
 
 
-def tool_names_for(worker_type: WorkerType, mcp_client: Optional[Any] = None) -> list[str]:
+def tool_names_for(worker_type: WorkerType, mcp_client: Optional[Any] = None, workspace: Optional[Any] = None) -> list[str]:
     """Resolve the read-only tool subset for `worker_type`. `mcp_client`, if
     given, additionally offers READ-permission MCP tools -- WRITE and
     DESTRUCTIVE are NEVER offered to a worker, regardless of `mcp.
     allow_write`/`allow_destructive` (a worker is unconditionally read-only,
-    unlike the main agent's EDIT action)."""
+    unlike the main agent's EDIT action). `workspace` (Phase 11), if given
+    and it has any other repo, additionally offers the READ-ONLY cross-repo
+    tools -- never the writable ones, even if the workspace has an
+    `--also-edit` repo; a worker never edits anything, in any repo."""
     names = list(WORKER_TOOL_NAMES.get(worker_type, []))
     if mcp_client is not None:
         names.extend(mcp_client.tool_names_by_permission(ToolPermission.READ))
+    if workspace is not None and workspace.has_any_other_repo():
+        names.extend(_CROSS_REPO_READ_TOOLS)
     return names
 
 
@@ -258,15 +264,17 @@ class WorkerAgent:
         tools: Any,
         mcp_client: Optional[Any] = None,
         max_iterations: int = _WORKER_MAX_ITERATIONS,
+        workspace: Optional[Any] = None,
     ) -> None:
         self.router = router
         self.tools = tools
         self.mcp_client = mcp_client
         self.max_iterations = max_iterations
+        self.workspace = workspace
 
     def run(self, task: WorkerTask) -> WorkerResult:
         start = time.time()
-        tool_names = tool_names_for(task.worker_type, self.mcp_client)
+        tool_names = tool_names_for(task.worker_type, self.mcp_client, self.workspace)
         scoped_tools = self.tools.subset(tool_names)
         system_prompt = _WORKER_SYSTEM_PROMPTS.get(
             task.worker_type, "You are a focused, read-only investigator. You cannot edit anything."

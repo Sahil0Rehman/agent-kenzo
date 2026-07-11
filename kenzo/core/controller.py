@@ -47,7 +47,7 @@ import json
 import time
 from typing import Any, Optional
 
-from kenzo.core.checkpoint import CheckpointingToolRegistry, CheckpointManager
+from kenzo.core.checkpoint import CheckpointingToolRegistry, CheckpointManager, CrossRepoCheckpointingToolRegistry
 from kenzo.core.code_search import CodeSearchEngine
 from kenzo.core.context_manager import ContextManager
 from kenzo.core.events import AgentEvent, EventSink
@@ -63,9 +63,11 @@ from kenzo.core.schemas import (
 )
 from kenzo.core.semantic_context import render_semantic_relevant
 from kenzo.core.tool_loop import extract_json, run_tool_loop
+from kenzo.core.workspace import Workspace
 from kenzo.mcp.permissions import ToolPermission
 from kenzo.memory.task_store import TaskStore
 from kenzo.server.edit_approval import EditApprovalToolRegistry
+from kenzo.tools import cross_repo
 from kenzo.tools.cache import CachedToolRegistry
 from kenzo.workers.manager import WorkerManager
 from kenzo.workers.merger import WorkerResultMerger
@@ -75,6 +77,19 @@ from kenzo.workers.models import WorkerResult, WorkerTask, WorkerType
 # reframed from fixed pipeline stages to dynamically-chosen actions. A role
 # without write_file/edit_file in its subset cannot execute them even if a
 # model hallucinates the call, exactly as under the old ROLE_TOOLS.
+# Phase 11: cross-repo workspace tools (see kenzo.tools.cross_repo) -- only
+# ever ACTUALLY registered/offered when a workspace with other repos is
+# active (ToolRegistry.subset() silently drops an unregistered name, exactly
+# like an MCP tool nobody connected), so listing them here unconditionally
+# is safe for every single-repo caller, which is still the overwhelming
+# majority of usage. Read-only tools go wherever the equivalent primary-repo
+# read tool already goes; the two writable ones go ONLY on EDIT, mirroring
+# write_file/edit_file exactly -- and even there, write_other_repo_file/
+# edit_other_repo_file additionally refuse at the TOOL layer (not just by
+# absence) against any repo not explicitly named in --also-edit.
+_CROSS_REPO_READ_TOOLS = cross_repo.READ_TOOL_NAMES
+_CROSS_REPO_WRITE_TOOLS = cross_repo.WRITE_TOOL_NAMES
+
 ACTION_TOOLS: dict[ControllerAction, list[str]] = {
     ControllerAction.PLAN: [
         "read_file",
@@ -84,6 +99,7 @@ ACTION_TOOLS: dict[ControllerAction, list[str]] = {
         "find_symbol",
         "explain_architecture",
         "semantic_search",
+        *_CROSS_REPO_READ_TOOLS,
     ],
     ControllerAction.SEARCH: [
         "search_files",
@@ -95,8 +111,9 @@ ACTION_TOOLS: dict[ControllerAction, list[str]] = {
         "find_callers",
         "find_usages",
         "semantic_search",
+        *_CROSS_REPO_READ_TOOLS,
     ],
-    ControllerAction.READ: ["read_file", "list_directory"],
+    ControllerAction.READ: ["read_file", "list_directory", *_CROSS_REPO_READ_TOOLS],
     ControllerAction.ANALYZE: [
         "read_file",
         "find_symbol",
@@ -108,6 +125,7 @@ ACTION_TOOLS: dict[ControllerAction, list[str]] = {
         "find_usages",
         "explain_architecture",
         "semantic_search",
+        *_CROSS_REPO_READ_TOOLS,
     ],
     ControllerAction.EDIT: [
         "read_file",
@@ -116,6 +134,8 @@ ACTION_TOOLS: dict[ControllerAction, list[str]] = {
         "repository_tree",
         "write_file",
         "edit_file",
+        *_CROSS_REPO_READ_TOOLS,
+        *_CROSS_REPO_WRITE_TOOLS,
     ],
     ControllerAction.TEST: ["read_file", "run_command", "find_related_tests"],
     ControllerAction.REVIEW: ["read_file", "diff", "status", "history", "branch"],
@@ -254,6 +274,43 @@ def _render_vision_context(context: Optional[dict[str, Any]]) -> str:
         lines.append(f"- Other visible text: {context['visible_text'][:500]}")
 
     return "Screenshot analysis (priority -- the user attached this image):\n" + "\n".join(lines)
+
+
+def _render_workspace_context(workspace: Optional[Workspace]) -> str:
+    """Render the Phase 11 multi-repo workspace (see `kenzo.core.workspace
+    .Workspace`) into a short block telling the model what other repos it
+    can reach and how. Returns "" if no workspace is active (the default --
+    single-repo callers are completely unaffected) or the workspace has no
+    other repos configured. Unlike ide_context/vision_context, this is
+    STATIC for the whole run (decided once via CLI flags, not settable
+    mid-task), so it's rendered every decision, not cleared/replaced.
+    """
+    if workspace is None or not workspace.has_any_other_repo():
+        return ""
+
+    lines: list[str] = []
+    for repo in workspace.others:
+        kind = "read+write" if repo.writable else "READ-ONLY"
+        lines.append(f"- '{repo.alias}' ({kind}): {repo.path}")
+
+    guidance = (
+        "Use read_other_repo_file/list_other_repo_directory/search_other_repo_files to "
+        "reference these (e.g. checking how a legacy/other branch implemented something "
+        "before changing the current one)."
+    )
+    if workspace.has_writable_other_repo():
+        guidance += (
+            " write_other_repo_file/edit_other_repo_file work ONLY against the repo(s) marked "
+            "read+write above -- e.g. porting the same fix into another branch. Every other repo "
+            "is refused at the tool level even if you try."
+        )
+    else:
+        guidance += " None of them are editable this run -- writes there will be refused."
+
+    return (
+        "Other repos available in this workspace (in addition to the primary repo you're "
+        f"working in):\n" + "\n".join(lines) + "\n" + guidance
+    )
 
 
 _DECIDE_ACTION_TOOL = {
@@ -456,6 +513,7 @@ class AgentController:
         architecture_memory: Optional[Any] = None,
         mcp_client: Optional[Any] = None,
         ide_mode: bool = False,
+        workspace: Optional[Workspace] = None,
     ) -> None:
         self.router = router
         self.memory = memory
@@ -465,6 +523,11 @@ class AgentController:
         self.session_memory = session_memory
         self.architecture_memory = architecture_memory
         self.mcp_client = mcp_client
+        # Phase 11: other repos this run can see (--see) and, if explicitly
+        # granted, edit (--also-edit) -- see kenzo.core.workspace. None (the
+        # default, and every pre-Phase-11 caller) means "single repo,"
+        # preserving exact prior behavior.
+        self.workspace = workspace
 
         self.checkpoint = CheckpointManager(str(memory.repo_root))
         scoped_tools: Any = CachedToolRegistry(tools)
@@ -477,6 +540,19 @@ class AgentController:
         if indexing_service is not None:
             scoped_tools = ReindexingToolRegistry(scoped_tools, indexing_service)
         self.tools = CheckpointingToolRegistry(scoped_tools, self.checkpoint)
+
+        # Phase 11: a SEPARATE CheckpointManager per --also-edit repo (keyed
+        # by workspace alias), so a bad cross-repo edit is exactly as
+        # recoverable via `kenzo rollback <that repo's path>` as a bad edit
+        # to the primary repo already is. Wrapped OUTSIDE the primary
+        # checkpoint wrapper above -- see CrossRepoCheckpointingToolRegistry's
+        # docstring for why the two never intercept the same tool call.
+        self._also_edit_checkpoints: dict[str, CheckpointManager] = {}
+        if workspace is not None and workspace.has_writable_other_repo():
+            self._also_edit_checkpoints = {
+                repo.alias: CheckpointManager(repo.path) for repo in workspace.others if repo.writable
+            }
+            self.tools = CrossRepoCheckpointingToolRegistry(self.tools, self._also_edit_checkpoints)
 
         # Phase 7: IDE mode (kenzo.server only -- CLI never sets this) wraps
         # write_file/edit_file so they propose-then-wait for approval instead
@@ -518,7 +594,7 @@ class AgentController:
 
             workers_config = WorkersConfig()
         self.worker_manager = WorkerManager(
-            router, self.tools, workers_config, mcp_client=mcp_client, emit=self._emit
+            router, self.tools, workers_config, mcp_client=mcp_client, emit=self._emit, workspace=workspace
         )
 
     def set_ide_context(self, context: Optional[dict[str, Any]]) -> None:
@@ -752,6 +828,7 @@ class AgentController:
         # kenzo.server.app._stash_ide_context for how this gets set.
         ide_context_block = _render_ide_context(self.ide_context)
         vision_context_block = _render_vision_context(self.vision_context)
+        workspace_context_block = _render_workspace_context(self.workspace)
 
         task_summary = self._render_task_state(task_state)
 
@@ -761,6 +838,7 @@ class AgentController:
             for part in (
                 ide_context_block,
                 vision_context_block,
+                workspace_context_block,
                 task_summary,
                 relevant,
                 graph_relevant,

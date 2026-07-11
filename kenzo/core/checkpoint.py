@@ -337,3 +337,54 @@ class CheckpointingToolRegistry:
 
     def subset(self, names: list[str]) -> "CheckpointingToolRegistry":
         return CheckpointingToolRegistry(self._wrapped.subset(names), self._checkpoint)
+
+
+class CrossRepoCheckpointingToolRegistry:
+    """Phase 11: the same checkpoint-before-first-edit guarantee
+    `CheckpointingToolRegistry` gives the PRIMARY repo, extended to every
+    `--also-edit` workspace repo -- each gets its OWN `CheckpointManager`
+    (keyed by workspace alias), so `kenzo rollback <that repo's path>`
+    can undo a bad cross-repo edit exactly like it already can for the
+    primary repo. Wraps OUTSIDE the primary `CheckpointingToolRegistry` (it
+    only intercepts `write_other_repo_file`/`edit_other_repo_file`, which
+    the primary wrapper's `_MUTATING` set doesn't recognize at all, so the
+    two never fight over the same call).
+    """
+
+    _MUTATING = {"write_other_repo_file", "edit_other_repo_file"}
+
+    def __init__(self, wrapped: Any, checkpoints_by_alias: dict[str, CheckpointManager]) -> None:
+        self._wrapped = wrapped
+        self._checkpoints_by_alias = checkpoints_by_alias
+
+    def execute(self, name: str, arguments: dict) -> Any:
+        if name in self._MUTATING:
+            alias = arguments.get("repo")
+            path = arguments.get("path")
+            checkpoint = self._checkpoints_by_alias.get(alias) if alias else None
+            if checkpoint is not None and path:
+                if not checkpoint.has_active_checkpoint():
+                    checkpoint.create_checkpoint(reason=f"before first edit ({name} {alias}:{path})")
+                checkpoint.before_edit(path)
+        return self._wrapped.execute(name, arguments)
+
+    def to_openai_tools(self) -> list[dict]:
+        return self._wrapped.to_openai_tools()
+
+    def names(self) -> list[str]:
+        return self._wrapped.names()
+
+    def get(self, name: str):
+        return self._wrapped.get(name)
+
+    def list_specs(self):
+        return self._wrapped.list_specs()
+
+    def register(self, spec) -> None:
+        self._wrapped.register(spec)
+
+    def register_many(self, specs) -> None:
+        self._wrapped.register_many(specs)
+
+    def subset(self, names: list[str]) -> "CrossRepoCheckpointingToolRegistry":
+        return CrossRepoCheckpointingToolRegistry(self._wrapped.subset(names), self._checkpoints_by_alias)

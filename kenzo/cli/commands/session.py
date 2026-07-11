@@ -9,18 +9,40 @@ pass through each stage.
 
 from __future__ import annotations
 
+from typing import Optional
+
 from rich.panel import Panel
 
 from kenzo.cli.ui.components import banner, render_controller_result, render_event
 from kenzo.cli.ui.console import console
 from kenzo.core.runtime import AgentRuntime
+from kenzo.core.workspace import WorkspaceError, build_workspace
 
 
-def start_interactive_session(repo_path: str = ".") -> None:
-    """Run the interactive Kenzo session against `repo_path` until the user exits."""
+def start_interactive_session(
+    repo_path: str = ".",
+    see: Optional[list[str]] = None,
+    also_edit: Optional[list[str]] = None,
+) -> None:
+    """Run the interactive Kenzo session against `repo_path` until the user
+    exits. `see`/`also_edit` (Phase 11), if given, put Kenzo in multi-repo
+    workspace mode -- see `kenzo.core.workspace`."""
     banner()
 
-    runtime = AgentRuntime(repo_path, on_event=render_event)
+    workspace = None
+    if see or also_edit:
+        try:
+            workspace = build_workspace(repo_path, see=see, also_edit=also_edit)
+        except WorkspaceError as exc:
+            console.print(Panel(str(exc), title="Kenzo Error", border_style="red"))
+            return
+        console.print(
+            f"[dim]Workspace: {len(workspace.others)} other repo(s) -- "
+            f"read-only: {[r.alias for r in workspace.others if not r.writable]}, "
+            f"writable: {workspace.writable_aliases()}[/dim]"
+        )
+
+    runtime = AgentRuntime(repo_path, on_event=render_event, workspace=workspace)
 
     try:
         while True:

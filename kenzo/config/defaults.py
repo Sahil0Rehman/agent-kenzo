@@ -66,7 +66,7 @@ indexing:
     - .gradle
     - out
     - coverage
-  max_indexed_files: 2000
+  max_indexed_files: 8000
 
 agent:
   max_iterations: 50

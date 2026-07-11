@@ -289,3 +289,42 @@ def test_edit_scoped_view_can_still_write_for_contrast(repo_root):
     result = edit_scoped.execute("write_file", {"path": "allowed_to_write.txt", "content": "hello"})
     assert result.success is True
     assert (repo_root / "allowed_to_write.txt").read_text(encoding="utf-8") == "hello"
+
+
+def test_action_tools_includes_cross_repo_read_tools_in_every_read_capable_action():
+    """Phase 11 regression: the cross-repo READ tool names must be present
+    everywhere the equivalent primary-repo read tools already are, so a
+    workspace-aware run can consult another repo from any of these actions."""
+    from kenzo.tools.cross_repo import READ_TOOL_NAMES
+
+    for action in (
+        ControllerAction.PLAN,
+        ControllerAction.SEARCH,
+        ControllerAction.READ,
+        ControllerAction.ANALYZE,
+        ControllerAction.EDIT,
+    ):
+        for name in READ_TOOL_NAMES:
+            assert name in ACTION_TOOLS[action], f"'{name}' missing from ACTION_TOOLS[{action}]"
+
+
+def test_action_tools_cross_repo_write_tools_only_reachable_from_edit():
+    """Phase 11 regression: write_other_repo_file/edit_other_repo_file must
+    mirror write_file/edit_file exactly -- present ONLY on EDIT, absent from
+    every read-only/non-mutating action."""
+    from kenzo.tools.cross_repo import WRITE_TOOL_NAMES
+
+    for name in WRITE_TOOL_NAMES:
+        assert name in ACTION_TOOLS[ControllerAction.EDIT]
+        for action in (
+            ControllerAction.PLAN,
+            ControllerAction.SEARCH,
+            ControllerAction.READ,
+            ControllerAction.ANALYZE,
+            ControllerAction.TEST,
+            ControllerAction.REVIEW,
+            ControllerAction.DELEGATE,
+            ControllerAction.ASK_USER,
+            ControllerAction.FINISH,
+        ):
+            assert name not in ACTION_TOOLS[action], f"'{name}' unexpectedly present in ACTION_TOOLS[{action}]"
