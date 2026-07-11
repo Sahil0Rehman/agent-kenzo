@@ -1,0 +1,30 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+.venv/
+venv/
+.env
+*.env
+
+# Kenzo's own repo-memory folder, if `kenzo init`/`kenzo index` is ever run
+# against this project itself.
+.kenzo/
+
+# VS Code extension (vscode-extension/): installed packages and compiled
+# output, both fully regeneratable via `npm install && npm run compile`.
+vscode-extension/node_modules/
+vscode-extension/out/
+vscode-extension/*.vsix
+vscode-extension/.vscode-test/
+
+# Editor/OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

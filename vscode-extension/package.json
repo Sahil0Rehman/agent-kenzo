@@ -1,0 +1,128 @@
+{
+  "name": "kenzo",
+  "displayName": "Kenzo",
+  "description": "Kenzo: a local, repository-aware AI coding agent, integrated into VS Code.",
+  "version": "0.1.0",
+  "publisher": "kenzo-contributors",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/src/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "kenzo",
+          "title": "Kenzo",
+          "icon": "media/kenzo.svg"
+        }
+      ]
+    },
+    "views": {
+      "kenzo": [
+        {
+          "id": "kenzo.chatView",
+          "name": "Chat",
+          "type": "webview"
+        },
+        {
+          "id": "kenzo.changesView",
+          "name": "Changes"
+        },
+        {
+          "id": "kenzo.memoryView",
+          "name": "Memory"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "kenzo.chat",
+        "title": "Kenzo: Chat",
+        "category": "Kenzo"
+      },
+      {
+        "command": "kenzo.explainFile",
+        "title": "Kenzo: Explain File",
+        "category": "Kenzo"
+      },
+      {
+        "command": "kenzo.fixError",
+        "title": "Kenzo: Fix Error",
+        "category": "Kenzo"
+      },
+      {
+        "command": "kenzo.reviewSelection",
+        "title": "Kenzo: Review Selection",
+        "category": "Kenzo"
+      },
+      {
+        "command": "kenzo.showTerminal",
+        "title": "Kenzo: Show Terminal",
+        "category": "Kenzo"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "kenzo.chat" },
+        { "command": "kenzo.explainFile" },
+        { "command": "kenzo.fixError" },
+        { "command": "kenzo.reviewSelection" },
+        { "command": "kenzo.showTerminal" }
+      ],
+      "editor/context": [
+        {
+          "command": "kenzo.explainFile",
+          "group": "kenzo"
+        },
+        {
+          "command": "kenzo.reviewSelection",
+          "when": "editorHasSelection",
+          "group": "kenzo"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Kenzo",
+      "properties": {
+        "kenzo.serverHost": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Host that `kenzo server` is listening on."
+        },
+        "kenzo.serverPort": {
+          "type": "number",
+          "default": 8756,
+          "description": "Port that `kenzo server` is listening on."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test": "mocha out/test/**/*.test.js --timeout 20000"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.0",
+    "@types/sinon": "^17.0.3",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.10",
+    "mocha": "^10.3.0",
+    "sinon": "^17.0.1",
+    "typescript": "^5.4.2"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}
